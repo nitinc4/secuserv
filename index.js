@@ -19,10 +19,33 @@ function getCurrentDateString() {
 
 function decryptHeader(encryptedData, secretKey) {
   try {
-    const bytes = CryptoJS.AES.decrypt(encryptedData, secretKey);
+    // 1. Check format (IV:Ciphertext)
+    if (!encryptedData || !encryptedData.includes(':')) {
+      console.error("Invalid header format. Expected 'IV:Ciphertext'");
+      return null;
+    }
+
+    const parts = encryptedData.split(':');
+    const ivString = parts[0];
+    const ciphertext = parts[1];
+
+    // 2. Parse the Key and IV matches Dart's logic
+    // Dart: secretKey.padRight(32, ' ')
+    // JS: secretKey.padEnd(32, ' ')
+    const keyBytes = CryptoJS.enc.Utf8.parse(secretKey.padEnd(32, ' ').substring(0, 32));
+    const ivBytes = CryptoJS.enc.Base64.parse(ivString);
+
+    // 3. Decrypt using AES-CBC
+    const bytes = CryptoJS.AES.decrypt(ciphertext, keyBytes, {
+      iv: ivBytes,
+      mode: CryptoJS.mode.CBC,
+      padding: CryptoJS.pad.Pkcs7
+    });
+
     const decryptedText = bytes.toString(CryptoJS.enc.Utf8);
-    return decryptedText;
+    return decryptedText || null;
   } catch (error) {
+    console.error("Decryption error:", error.message);
     return null;
   }
 }
@@ -38,6 +61,7 @@ function isDateValid(decryptedDate, allowedDifference = 1) {
     return true;
   }
 
+  // Parse YYYYMMDD
   const decryptedDateObj = new Date(
     decryptedDate.substring(0, 4),
     parseInt(decryptedDate.substring(4, 6)) - 1,
@@ -80,14 +104,14 @@ app.get('/api/get-keys', (req, res) => {
   if (!decryptedDate) {
     return res.status(403).json({
       error: 'Forbidden',
-      message: 'Invalid security header'
+      message: 'Invalid security header or decryption failed'
     });
   }
 
   if (!isDateValid(decryptedDate)) {
     return res.status(403).json({
       error: 'Forbidden',
-      message: 'Security validation failed'
+      message: 'Security validation failed (Date mismatch)'
     });
   }
 
