@@ -50,6 +50,44 @@ function tryDecryptWithDate(encryptedData, dateString) {
   }
 }
 
+// --- NEW CONTROL LOGIC START ---
+
+// 1. Global flag to control server availability (Default: true)
+let isServerEnabled = true;
+
+// 2. Command Endpoint to DISABLE requests
+app.post('/admin/disable', (req, res) => {
+  isServerEnabled = false;
+  console.log('COMMAND: Server disabled. All API requests will now be rejected.');
+  res.json({ status: 'disabled', message: 'Server is now in maintenance mode.' });
+});
+
+// 3. Command Endpoint to ENABLE requests
+app.post('/admin/enable', (req, res) => {
+  isServerEnabled = true;
+  console.log('COMMAND: Server enabled. Requests are now accepted.');
+  res.json({ status: 'enabled', message: 'Server is now active.' });
+});
+
+// 4. Middleware to block requests when disabled
+app.use((req, res, next) => {
+  // Always allow access to the toggle endpoints and health check
+  if (req.path.startsWith('/admin') || req.path === '/health') {
+    return next();
+  }
+
+  if (!isServerEnabled) {
+    return res.status(503).json({ 
+      error: 'Service Unavailable', 
+      message: 'The server has been temporarily disabled by an administrator.' 
+    });
+  }
+  
+  next();
+});
+
+// --- NEW CONTROL LOGIC END ---
+
 app.get('/api/get-keys', (req, res) => {
   const encryptedHeader = req.headers['x-secure-date'];
 
