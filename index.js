@@ -29,13 +29,12 @@ function decryptHeader(encryptedData, secretKey) {
     const ivString = parts[0];
     const ciphertext = parts[1];
 
-    // 2. Parse the Key and IV matches Dart's logic
-    // Dart: secretKey.padRight(32, ' ')
-    // JS: secretKey.padEnd(32, ' ')
+    // 2. Parse the Key and IV to match Dart's logic
+    // We pad the key to 32 bytes to ensure it works as a raw AES-256 key
     const keyBytes = CryptoJS.enc.Utf8.parse(secretKey.padEnd(32, ' ').substring(0, 32));
     const ivBytes = CryptoJS.enc.Base64.parse(ivString);
 
-    // 3. Decrypt using AES-CBC
+    // 3. Decrypt using AES-CBC with the specific IV
     const bytes = CryptoJS.AES.decrypt(ciphertext, keyBytes, {
       iv: ivBytes,
       mode: CryptoJS.mode.CBC,
@@ -115,6 +114,7 @@ app.get('/api/get-keys', (req, res) => {
     });
   }
 
+  // Return your actual keys here
   const apiKeys = {
     apiKey1: process.env.API_KEY_1,
     apiKey2: process.env.API_KEY_2,
@@ -133,6 +133,4 @@ app.get('/health', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Secure API server running on port ${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
-  console.log(`Secure endpoint: http://localhost:${PORT}/api/get-keys`);
 });
