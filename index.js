@@ -6,111 +6,77 @@ const CryptoJS = require('crypto-js');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// The fixed verification phrase both Client and Server must know
+const VERIFICATION_PHRASE = "BNB_SECURE_ACCESS";
+
 app.use(cors());
 app.use(express.json());
 
-function getCurrentDateString() {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
+// Helper to get date string with optional day offset
+function getDateString(offsetDays = 0) {
+  const date = new Date();
+  date.setDate(date.getDate() + offsetDays);
+  
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
   return `${year}${month}${day}`;
 }
 
-function decryptHeader(encryptedData, secretKey) {
+// Helper: Try to decrypt payload using a specific date string as the key
+function tryDecryptWithDate(encryptedData, dateString) {
   try {
-    // 1. Check format (IV:Ciphertext)
-    if (!encryptedData || !encryptedData.includes(':')) {
-      console.error("Invalid header format. Expected 'IV:Ciphertext'");
-      return null;
-    }
+    if (!encryptedData.includes(':')) return null;
 
     const parts = encryptedData.split(':');
     const ivString = parts[0];
     const ciphertext = parts[1];
 
-    // 2. Parse the Key and IV to match Dart's logic
-    // We pad the key to 32 bytes to ensure it works as a raw AES-256 key
-    const keyBytes = CryptoJS.enc.Utf8.parse(secretKey.padEnd(32, ' ').substring(0, 32));
+    // Use the Date String (padded) as the Key
+    const keyBytes = CryptoJS.enc.Utf8.parse(dateString.padEnd(32, ' ').substring(0, 32));
     const ivBytes = CryptoJS.enc.Base64.parse(ivString);
 
-    // 3. Decrypt using AES-CBC with the specific IV
     const bytes = CryptoJS.AES.decrypt(ciphertext, keyBytes, {
       iv: ivBytes,
       mode: CryptoJS.mode.CBC,
       padding: CryptoJS.pad.Pkcs7
     });
 
-    const decryptedText = bytes.toString(CryptoJS.enc.Utf8);
-    return decryptedText || null;
+    return bytes.toString(CryptoJS.enc.Utf8);
   } catch (error) {
-    console.error("Decryption error:", error.message);
-    return null;
+    return null; 
   }
-}
-
-function isDateValid(decryptedDate, allowedDifference = 1) {
-  if (!decryptedDate || decryptedDate.length !== 8) {
-    return false;
-  }
-
-  const currentDate = getCurrentDateString();
-
-  if (decryptedDate === currentDate) {
-    return true;
-  }
-
-  // Parse YYYYMMDD
-  const decryptedDateObj = new Date(
-    decryptedDate.substring(0, 4),
-    parseInt(decryptedDate.substring(4, 6)) - 1,
-    decryptedDate.substring(6, 8)
-  );
-
-  const currentDateObj = new Date(
-    currentDate.substring(0, 4),
-    parseInt(currentDate.substring(4, 6)) - 1,
-    currentDate.substring(6, 8)
-  );
-
-  const diffTime = Math.abs(currentDateObj - decryptedDateObj);
-  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-  return diffDays <= allowedDifference;
 }
 
 app.get('/api/get-keys', (req, res) => {
   const encryptedHeader = req.headers['x-secure-date'];
 
   if (!encryptedHeader) {
-    return res.status(403).json({
-      error: 'Forbidden',
-      message: 'Security header missing'
-    });
+    return res.status(403).json({ error: 'Forbidden', message: 'Security header missing' });
   }
 
-  const secretKey = process.env.SHARED_SECRET_KEY;
+  // Generate candidate keys (Yesterday, Today, Tomorrow) to handle Timezone differences
+  const candidateDates = [
+    getDateString(0),  // Today
+    getDateString(-1), // Yesterday
+    getDateString(1)   // Tomorrow
+  ];
 
-  if (!secretKey) {
-    console.error('SHARED_SECRET_KEY not configured in environment variables');
-    return res.status(500).json({
-      error: 'Server configuration error'
-    });
+  let authorized = false;
+
+  // Try to decrypt with each date. If any works, we are good.
+  for (const dateKey of candidateDates) {
+    const decrypted = tryDecryptWithDate(encryptedHeader, dateKey);
+    if (decrypted === VERIFICATION_PHRASE) {
+      authorized = true;
+      break; 
+    }
   }
 
-  const decryptedDate = decryptHeader(encryptedHeader, secretKey);
-
-  if (!decryptedDate) {
+  if (!authorized) {
     return res.status(403).json({
       error: 'Forbidden',
-      message: 'Invalid security header or decryption failed'
-    });
-  }
-
-  if (!isDateValid(decryptedDate)) {
-    return res.status(403).json({
-      error: 'Forbidden',
-      message: 'Security validation failed (Date mismatch)'
+      message: 'Security validation failed (Invalid Date Key)'
     });
   }
 
