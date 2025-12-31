@@ -12,7 +12,7 @@ const VERIFICATION_PHRASE = "BNB_SECURE_ACCESS";
 app.use(cors());
 app.use(express.json());
 
-// Helper to get date string with optional day offset
+// Helper to get date string with optional day offset (YYYYMMDD)
 function getDateString(offsetDays = 0) {
   const date = new Date();
   date.setDate(date.getDate() + offsetDays);
@@ -26,16 +26,18 @@ function getDateString(offsetDays = 0) {
 // Helper: Try to decrypt payload using a specific date string as the key
 function tryDecryptWithDate(encryptedData, dateString) {
   try {
-    if (!encryptedData.includes(':')) return null;
+    // 1. Check format (IV:Ciphertext)
+    if (!encryptedData || !encryptedData.includes(':')) return null;
 
     const parts = encryptedData.split(':');
     const ivString = parts[0];
     const ciphertext = parts[1];
 
-    // Use the Date String (padded) as the Key
+    // 2. Use the Date String (padded to 32 bytes) as the Key
     const keyBytes = CryptoJS.enc.Utf8.parse(dateString.padEnd(32, ' ').substring(0, 32));
     const ivBytes = CryptoJS.enc.Base64.parse(ivString);
 
+    // 3. Decrypt using AES-CBC
     const bytes = CryptoJS.AES.decrypt(ciphertext, keyBytes, {
       iv: ivBytes,
       mode: CryptoJS.mode.CBC,
@@ -80,11 +82,16 @@ app.get('/api/get-keys', (req, res) => {
     });
   }
 
-  // Return your actual keys here
+  // Return the specific keys from your .env file
   const apiKeys = {
-    apiKey1: process.env.API_KEY_1,
-    apiKey2: process.env.API_KEY_2,
-    apiKey3: process.env.API_KEY_3,
+    magentoBaseUrl: process.env.MAGENTO_BASE_URL,
+    consumerKey: process.env.CONSUMER_KEY,
+    consumerSecret: process.env.CONSUMER_SECRET,
+    accessToken: process.env.ACCESS_TOKEN,
+    accessTokenSecret: process.env.ACCESS_TOKEN_SECRET,
+    geminiApiKey: process.env.GEMINI_API_KEY,
+    rfqUrl: process.env.RFQ_URL,
+    rfqToken: process.env.RFQ_TOKEN
   };
 
   return res.json({
