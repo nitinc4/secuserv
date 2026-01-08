@@ -2,114 +2,69 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const CryptoJS = require('crypto-js');
+const nodemailer = require('nodemailer'); // <--- 1. Import Nodemailer
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-// The fixed verification phrase both Client and Server must know
 const VERIFICATION_PHRASE = "BNB_SECURE_ACCESS";
 
 app.use(cors());
 app.use(express.json());
 
-// Helper to get date string with optional day offset (YYYYMMDD)
+// --- 2. Configure Email Transporter ---
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST,
+  port: process.env.SMTP_PORT,
+  secure: process.env.SMTP_PORT == 465, // true for 465, false for other ports
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS,
+  },
+});
+
+// Helper to get date string
 function getDateString(offsetDays = 0) {
   const date = new Date();
   date.setDate(date.getDate() + offsetDays);
-  
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${year}${month}${day}`;
 }
 
-// Helper: Try to decrypt payload using a specific date string as the key
+// Helper: Try to decrypt payload
 function tryDecryptWithDate(encryptedData, dateString) {
   try {
-    // 1. Check format (IV:Ciphertext)
     if (!encryptedData || !encryptedData.includes(':')) return null;
-
     const parts = encryptedData.split(':');
     const ivString = parts[0];
     const ciphertext = parts[1];
-
-    // 2. Use the Date String (padded to 32 bytes) as the Key
     const keyBytes = CryptoJS.enc.Utf8.parse(dateString.padEnd(32, ' ').substring(0, 32));
     const ivBytes = CryptoJS.enc.Base64.parse(ivString);
-
-    // 3. Decrypt using AES-CBC
     const bytes = CryptoJS.AES.decrypt(ciphertext, keyBytes, {
-      iv: ivBytes,
-      mode: CryptoJS.mode.CBC,
-      padding: CryptoJS.pad.Pkcs7
+      iv: ivBytes, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7
     });
-
     return bytes.toString(CryptoJS.enc.Utf8);
-  } catch (error) {
-    return null; 
-  }
+  } catch (error) { return null; }
 }
 
-// --- NEW CONTROL LOGIC START ---
-
-// 1. Global flag to control server availability (Default: true)
-let isServerEnabled = true;
-
-// 2. Command Endpoint to DISABLE requests
-app.post('/admin/disable', (req, res) => {
-  isServerEnabled = false;
-  console.log('COMMAND: Server disabled. All API requests will now be rejected.');
-  res.json({ status: 'disabled', message: 'Server is now in maintenance mode.' });
-});
-
-// 3. Command Endpoint to ENABLE requests
-app.post('/admin/enable', (req, res) => {
-  isServerEnabled = true;
-  console.log('COMMAND: Server enabled. Requests are now accepted.');
-  res.json({ status: 'enabled', message: 'Server is now active.' });
-});
-
-// 4. Middleware to block requests when disabled
-app.use((req, res, next) => {
-  // Always allow access to the toggle endpoints and health check
-  if (req.path.startsWith('/admin') || req.path === '/health') {
-    return next();
-  }
-
-  if (!isServerEnabled) {
-    return res.status(503).json({ 
-      error: 'Service Unavailable', 
-      message: 'The server has been temporarily disabled by an administrator.' 
-    });
-  }
-  
-  next();
-});
-
-// --- NEW CONTROL LOGIC END ---
-
-app.get('/api/get-keys', (req, res) => {
+// --- 3. Refactored Security Middleware ---
+// This allows us to protect ANY route with your date-encryption logic
+const verifySecureHeader = (req, res, next) => {
   const encryptedHeader = req.headers['x-secure-date'];
 
   if (!encryptedHeader) {
     return res.status(403).json({ error: 'Forbidden', message: 'Security header missing' });
   }
 
-  // Generate candidate keys (Yesterday, Today, Tomorrow) to handle Timezone differences
-  const candidateDates = [
-    getDateString(0),  // Today
-    getDateString(-1), // Yesterday
-    getDateString(1)   // Tomorrow
-  ];
-
+  const candidateDates = [getDateString(0), getDateString(-1), getDateString(1)];
   let authorized = false;
 
-  // Try to decrypt with each date. If any works, we are good.
   for (const dateKey of candidateDates) {
     const decrypted = tryDecryptWithDate(encryptedHeader, dateKey);
     if (decrypted === VERIFICATION_PHRASE) {
       authorized = true;
-      break; 
+      break;
     }
   }
 
@@ -119,8 +74,35 @@ app.get('/api/get-keys', (req, res) => {
       message: 'Security validation failed (Invalid Date Key)'
     });
   }
+  
+  next(); // Access granted
+};
 
-  // Return the specific keys from your .env file
+// --- Server Control Logic ---
+let isServerEnabled = true;
+
+app.post('/admin/disable', (req, res) => {
+  isServerEnabled = false;
+  console.log('COMMAND: Server disabled.');
+  res.json({ status: 'disabled' });
+});
+
+app.post('/admin/enable', (req, res) => {
+  isServerEnabled = true;
+  console.log('COMMAND: Server enabled.');
+  res.json({ status: 'enabled' });
+});
+
+app.use((req, res, next) => {
+  if (req.path.startsWith('/admin') || req.path === '/health') return next();
+  if (!isServerEnabled) return res.status(503).json({ error: 'Service Unavailable' });
+  next();
+});
+
+// --- API Routes ---
+
+// Updated: Now uses the verifySecureHeader middleware
+app.get('/api/get-keys', verifySecureHeader, (req, res) => {
   const apiKeys = {
     magentoBaseUrl: process.env.MAGENTO_BASE_URL,
     consumerKey: process.env.CONSUMER_KEY,
@@ -131,11 +113,32 @@ app.get('/api/get-keys', (req, res) => {
     rfqUrl: process.env.RFQ_URL,
     rfqToken: process.env.RFQ_TOKEN
   };
+  return res.json({ success: true, keys: apiKeys });
+});
 
-  return res.json({
-    success: true,
-    keys: apiKeys
-  });
+// --- NEW: Email Sending Endpoint ---
+app.post('/api/send-email', verifySecureHeader, async (req, res) => {
+  const { to, subject, text, html } = req.body;
+
+  if (!to || !subject || (!text && !html)) {
+    return res.status(400).json({ error: 'Missing required fields (to, subject, text/html)' });
+  }
+
+  try {
+    const info = await transporter.sendMail({
+      from: process.env.SMTP_FROM, // Sender address
+      to: to,                      // List of receivers
+      subject: subject,            // Subject line
+      text: text,                  // Plain text body
+      html: html,                  // HTML body
+    });
+
+    console.log('Message sent: %s', info.messageId);
+    res.json({ success: true, message: 'Email sent successfully', messageId: info.messageId });
+  } catch (error) {
+    console.error('Error sending email:', error);
+    res.status(500).json({ success: false, error: 'Failed to send email' });
+  }
 });
 
 app.get('/health', (req, res) => {
